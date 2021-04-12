@@ -2,10 +2,15 @@
 local rays = {
 	size = 50,
 	interval = 60,
-	vector = vector.new(-1, -2, -1),
+	params = {
+		minlight = 2,
+		threshold = 9,
+		a1 = 0.8,
+		a2 = 0.85
+	},
+	vector = vector.new(-1, -2, 1),
 	transparency = {},
-	loaded_blocks = {},
-	generation = 3,
+	generation = 27,
 }
 
 
@@ -19,21 +24,26 @@ function rays:load_definitions()
 		elseif node.drawtype == "airlike" or node.drawtype == "torchlike" or node.drawtype == "firelike" or node.drawtype == "plantlike" then
 			self.transparency[id] = 1
 		elseif node.drawtype == "glasslike" or node.drawtype == "glasslike_framed" or node.drawtype == "glasslike_framed_optional" then 
-			self.transparency[id] = 0.9
+			self.transparency[id] = 0.95
 		elseif node.drawtype == "liquid" or node.drawtype == "flowingliquid" then
-			self.transparency[id] = 0.8
+			self.transparency[id] = 0.9
 		elseif node.drawtype == "allfaces" or node.drawtype == "allfaces_optional" then 
-			self.transparency[id] = 0.7
+			self.transparency[id] = 0.8
 		elseif node.drawtype == "fencelike" or node.drawtype == "raillike" then
-			self.transparency[id] = 0.5
+			self.transparency[id] = 0
 		else
 			self.transparency[id] = 0
 		end 
 	end
 end
 
+function rays:decay(light)
+	return math.max(self.params.minlight, light > self.params.threshold and light * self.params.a1 or light * self.params.a2)
+end
+
+
 function rays:update_shadows(min, max)
-	local vm = minetest.get_voxel_manip(min, vector.add(max, vector.new(1,1,1)))
+	local vm = minetest.get_voxel_manip(vector.add(min, vector.new(-1,-1,-1)), vector.add(max, vector.new(1,1,1)))
 	local minedge, maxedge = vm:get_emerged_area()
 	local va = VoxelArea:new{MinEdge = minedge, MaxEdge = maxedge}
 
@@ -43,33 +53,26 @@ function rays:update_shadows(min, max)
 
 	local origin = va:indexp(min)
 
-	for i in va:iterp(min, vector.add(max, vector.new(1,1,1))) do
+	for i in va:iterp(vector.add(min, vector.new(-1,-1,-1)), vector.add(max, vector.new(1,1,1))) do
 		light[i] = maplight[i] % 16 -- copy daylight
 		maxi = i
 	end
 
 	local minlight = minetest.LIGHT_MAX
 	local maxlight = 0
+	local i,delta,source,transparency
 	-- rays
 	for y = max.y-min.y,0,-1 do
 		for z = 0,max.z-min.z do
 			for x = 0,max.x-min.x do
-				local i = origin + x + y*va.ystride + z*va.zstride
-				local delta = ((min.y + y)%(-self.vector.y) == 0 and 1 or 0) -- 2 to 1
-				local source = i + va.ystride - self.vector.x * delta - self.vector.z * delta*va.zstride
-
-				local transparency = math.min(self.transparency[ data[i] ], math.min(self.transparency[ data[i - self.vector.x * delta] ], self.transparency[ data[i - self.vector.z * delta * va.zstride] ]))
-
+				i = origin + x + y*va.ystride + z*va.zstride
+				delta = ((min.y + y)%(-self.vector.y) == 0 and 1 or 0) -- 2 to 1
+				source = i + va.ystride - self.vector.x * delta - self.vector.z * delta*va.zstride
+				-- take the smallest transparency of self, +x and +z. this is to handle edges of walls, houses and caves
+				transparency = math.min(self.transparency[ data[i] ], math.min(self.transparency[ data[i - self.vector.x * delta] ], self.transparency[ data[i - self.vector.z * delta * va.zstride] ]))
 
 				light[i] = light[source] * transparency
-				if delta > 0 then
-					light[i] = light[i] * 2
-					source = source + self.vector.x * delta
-					light[i] = light[i] + light[source] * transparency
-					source = source - self.vector.x * delta + self.vector.z * delta * va.zstride
-					light[i] = light[i] + light[source] * transparency
-					light[i] = light[i] / 4
-				end
+
 				if light[i] < minlight then
 					minlight = light[i]
 				end
@@ -81,11 +84,6 @@ function rays:update_shadows(min, max)
 	end
 
 	local dirty = false
-
-	-- decay
-	local function _decay(light)
-		return math.max(1, light > 6 and light * 0.7 or light * 0.95)
-	end
 
 	for y = max.y-min.y,0,-1 do
 		for z = 0,max.z-min.z do
@@ -100,9 +98,9 @@ function rays:update_shadows(min, max)
 							for dz = -1,1 do
 								-- if not self
 								if dx ~= 0 or dy ~= 0 or dz ~= 0 then
-									local sourcelight = light[i + dx + dy*va.ystride + dz*va.zstride] or 0
-									if _decay(sourcelight) > daylight then
-										daylight = _decay(sourcelight)
+									local sourcelight = self:decay(light[i + dx + dy*va.ystride + dz*va.zstride] or 0)
+									if sourcelight > daylight then
+										daylight = sourcelight
 									end
 								end
 							end
@@ -175,15 +173,24 @@ local function watch_players()
 	end
 end
 
+local function mark_block_dirty(block)
+	local chain_block_node = to_node_pos(block)
+	if minetest.get_node_or_nil(chain_block_node) ~= nil then
+		minetest.get_meta(chain_block_node):set_int("shadows", 0)
+	end
+end
+
 local function update_blocks()
 	local start = os.clock()
 	-- loop for a fixed budget of 0.5 seconds
 	while os.clock() - start < 0.5 do
-		local block
+		local block,high_priority
 		if #queues.hi > 0 then
 			block = table.remove(queues.hi)
+			high_priority = true
 		elseif #queues.lo > 0 then
 			block = table.remove(queues.lo)
+			high_priority = false
 		else
 			return
 		end
@@ -202,11 +209,15 @@ local function update_blocks()
 				local dirty = rays:update_shadows(min, max)
 				minetest.get_meta(min):set_int("shadows", rays.generation)
 				if dirty then
-					for x = -1,0 do
-						for z = -1,0 do
-							local chain_block_node = to_node_pos(vector.add(block, vector.new(x,-1,z)))
-							if minetest.get_node_or_nil(chain_block_node) ~= nil then
-								minetest.get_meta(chain_block_node):set_int("shadows", 0)
+					for y = 1,-1,-1 do
+						for x = -rays.vector.x,rays.vector.x,rays.vector.x == 0 and 1 or rays.vector.x do
+							for z = -rays.vector.z,rays.vector.z,rays.vector.z == 0 and 1 or rays.vector.z do
+								if x ~= 0 or y ~= 0 or z ~= 0 then
+									mark_block_dirty(vector.add(block, vector.new(x, y, z)))
+									if high_priority then
+										table.insert(queues.hi, block)
+									end
+								end
 							end
 						end
 					end
@@ -219,8 +230,20 @@ end
 local function step()
 	watch_players()
 	update_blocks()
-	minetest.chat_send_all("#queues.lo="..#queues.lo.." #queues.hi="..#queues.hi)
+	--minetest.chat_send_all("#queues.lo="..#queues.lo.." #queues.hi="..#queues.hi)
 	minetest.after(1, step)
 end
 
 minetest.after(1, step)
+
+minetest.register_on_dignode(function(pos)
+	local block = to_block_pos(pos)
+	mark_block_dirty(block)
+	table.insert(queues.hi, block)
+end)
+
+minetest.register_on_placenode(function(pos)
+	local block = to_block_pos(pos)
+	mark_block_dirty(block)
+	table.insert(queues.hi, block)
+end)
