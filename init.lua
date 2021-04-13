@@ -215,7 +215,7 @@ local function update_blocks()
 								if x ~= 0 or y ~= 0 or z ~= 0 then
 									mark_block_dirty(vector.add(block, vector.new(x, y, z)))
 									if high_priority then
-										table.insert(queues.hi, block)
+										table.insert(queues.lo, block)
 									end
 								end
 							end
