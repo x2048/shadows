@@ -92,12 +92,13 @@ function rays:update_shadows(min, max)
 
 	local dirty = false
 
-	for y = max.y-min.y,0,-1 do
-		for z = 0,max.z-min.z do
-			for x = 0,max.x-min.x do
-				local i = origin + x + y*va.ystride + z*va.zstride
+	if minlight ~= maxlight then
+		self:inc_counter("blur")
+		for y = max.y-min.y,0,-1 do
+			for z = 0,max.z-min.z do
+				for x = 0,max.x-min.x do
+					local i = origin + x + y*va.ystride + z*va.zstride
 
-				if minlight ~= maxlight then
 					local daylight = light[i]
 
 					for dy = 1,-1,-1 do
@@ -115,6 +116,14 @@ function rays:update_shadows(min, max)
 					end
 					light[i] = daylight
 				end
+			end
+		end
+	end
+
+	for y = max.y-min.y,0,-1 do
+		for z = 0,max.z-min.z do
+			for x = 0,max.x-min.x do
+				local i = origin + x + y*va.ystride + z*va.zstride
 				newlight = math.floor(maplight[i] / 16) * 16 + math.floor(light[i])
 				if maplight[i] ~= newlight then
 					maplight[i] = newlight
