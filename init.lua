@@ -10,15 +10,11 @@ local rays = {
 	},
 	vector = vector.new(-1, -2, 1),
 	transparency = {},
-	buffers = {
-		light = {},
-		content = {}
-	},
+	buffers = { light = {}, content = {} },
 	players = {},
 	queues = { lo = {}, hi = {} },
-	counters = {
-	},
-	generation = 34,
+	counters = {},
+	generation = 43,
 }
 
 
@@ -65,9 +61,10 @@ function rays:update_shadows(min, max)
 		light[i] = maplight[i] % 16 -- copy daylight
 	end
 
-	local minlight = 99 -- take absurdly large value
+	local minlight = 99 -- large inital value
 	local maxlight = 0
-	local i,delta,source,transparency,ilight,newlight,points
+	local i,delta,source,transparency,ilight
+
 	-- rays
 	for y = max.y-min.y,0,-1 do
 		for z = 0,max.z-min.z do
@@ -78,20 +75,21 @@ function rays:update_shadows(min, max)
 				-- take the smallest transparency of self, +x and +z. this is to handle edges of walls, houses and caves
 				transparency = math.min(self.transparency[ data[i] ], math.min(self.transparency[ data[i - self.vector.x * delta] ], self.transparency[ data[i - self.vector.z * delta * va.zstride] ]))
 
-				light[i] = light[source] * transparency
+				ilight = light[source] * transparency
 
-				if light[i] < minlight then
-					minlight = light[i]
+				if ilight < minlight then
+					minlight = ilight
 				end
-				if light[i] > maxlight then
-					maxlight = light[i]
+				if ilight > maxlight then
+					maxlight = ilight
 				end
+
+				light[i] = ilight
 			end
 		end
 	end
 
-	local dirty = false
-
+	-- propagation / blur
 	if minlight ~= maxlight then
 		self:inc_counter("blur")
 		for y = max.y-min.y,0,-1 do
@@ -120,13 +118,15 @@ function rays:update_shadows(min, max)
 		end
 	end
 
+	-- write back to map
+	local dirty = false
 	for y = max.y-min.y,0,-1 do
 		for z = 0,max.z-min.z do
 			for x = 0,max.x-min.x do
-				local i = origin + x + y*va.ystride + z*va.zstride
-				newlight = math.floor(maplight[i] / 16) * 16 + math.floor(light[i])
-				if maplight[i] ~= newlight then
-					maplight[i] = newlight
+				i = origin + x + y*va.ystride + z*va.zstride
+				ilight = math.floor(maplight[i] / 16) * 16 + math.floor(light[i])
+				if maplight[i] ~= ilight then
+					maplight[i] = ilight
 					dirty = true
 				end
 			end
