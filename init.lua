@@ -10,7 +10,15 @@ local rays = {
 	},
 	vector = vector.new(-1, -2, 1),
 	transparency = {},
-	generation = 27,
+	buffers = {
+		light = {},
+		content = {}
+	},
+	players = {},
+	queues = { lo = {}, hi = {} },
+	counters = {
+	},
+	generation = 34,
 }
 
 
@@ -47,20 +55,19 @@ function rays:update_shadows(min, max)
 	local minedge, maxedge = vm:get_emerged_area()
 	local va = VoxelArea:new{MinEdge = minedge, MaxEdge = maxedge}
 
-	local data = vm:get_data()
-	local maplight = vm:get_light_data() -- light from and to the map
+	local data = vm:get_data(self.buffers.content)
+	local maplight = vm:get_light_data(self.buffers.light) -- light from and to the map
 	local light = {}                     -- real daylight spread
 
 	local origin = va:indexp(min)
 
 	for i in va:iterp(vector.add(min, vector.new(-1,-1,-1)), vector.add(max, vector.new(1,1,1))) do
 		light[i] = maplight[i] % 16 -- copy daylight
-		maxi = i
 	end
 
-	local minlight = minetest.LIGHT_MAX
+	local minlight = 99 -- take absurdly large value
 	local maxlight = 0
-	local i,delta,source,transparency
+	local i,delta,source,transparency,ilight,newlight,points
 	-- rays
 	for y = max.y-min.y,0,-1 do
 		for z = 0,max.z-min.z do
@@ -108,7 +115,7 @@ function rays:update_shadows(min, max)
 					end
 					light[i] = daylight
 				end
-				local newlight = math.floor(maplight[i] / 16) * 16 + math.floor(light[i])
+				newlight = math.floor(maplight[i] / 16) * 16 + math.floor(light[i])
 				if maplight[i] ~= newlight then
 					maplight[i] = newlight
 					dirty = true
@@ -116,20 +123,34 @@ function rays:update_shadows(min, max)
 			end
 		end
 	end
-
+	self:inc_counter("calc")
 
 	if dirty then
 		vm:set_light_data(maplight)
 		vm:write_to_map(false)
+		self:inc_counter("update")
 	end
 	return dirty
 end
 
+function rays:inc_counter(name)
+	self.counters[name] = (self.counters[name] or 0) + 1
+end
 
--- register node transparency
-minetest.register_on_mods_loaded(function() rays:load_definitions() end)
+function rays:dump_counters()
+	local s = "hi="..#rays.queues.hi.." lo="..#rays.queues.lo
+	local counters = rays.counters
+	rays.counters = {}
+	for _,name in ipairs({"ignored", "calc", "blur", "update", "skip", "reset", "requeue" }) do
+		s = s.." "..name.."="..(counters[name] or 0)
+		counters[name] = nil
+	end
+	for name,value in pairs(counters) do
+		s = s.." "..name.."="..value
+	end
+	minetest.chat_send_all(s)
+end
 
-local players = {}
 
 local function to_block_pos(pos)
 	return vector.new(math.floor(pos.x / 16), math.floor(pos.y / 16), math.floor(pos.z / 16))
@@ -143,28 +164,24 @@ local function same_pos(pos1, pos2)
 	return pos1.x == pos2.x and pos1.y == pos2.y and pos1.z == pos2.z
 end
 
-minetest.register_on_joinplayer(function(player)
-	players[player:get_player_name()] = to_block_pos(player:get_pos())
-end)
-
-local queues = { hi = {}, lo = {} }
-
-local function watch_players()
-	for name,previous_block in pairs(players) do
+function rays:watch_players()
+	for name,previous_block in pairs(self.players) do
 		player = minetest.get_player_by_name(name)
 		player_block = to_block_pos(player:get_pos())
 		if not same_pos(player_block, previous_block) then
-			players[name] = player_block
-			for y = -5,5 do
-				for x = -5,5 do
-					for z = -5,5 do
+			self.players[name] = player_block
+			for y = -3,3 do
+				for x = -3,3 do
+					for z = -3,3 do
 						local block = vector.add(player_block, vector.new(x, y, z))
 						if minetest.get_meta(to_node_pos(block)):get_int("shadows") < rays.generation then
-							if math.abs(x) + math.abs(y) + math.abs(z) <= 2 then
-								table.insert(queues.hi, block)
+							if math.abs(x) + math.abs(y) + math.abs(z) <= 1 then
+								table.insert(self.queues.hi, block)
 							else
-								table.insert(queues.lo, block)
+								table.insert(self.queues.lo, block)
 							end
+						else
+							self:inc_counter("ignored")
 						end
 					end
 				end
@@ -176,27 +193,31 @@ end
 local function mark_block_dirty(block)
 	local chain_block_node = to_node_pos(block)
 	if minetest.get_node_or_nil(chain_block_node) ~= nil then
-		minetest.get_meta(chain_block_node):set_int("shadows", 0)
+		local meta = minetest.get_meta(chain_block_node)
+		if meta:get_int("shadows") ~= 0 then
+			minetest.get_meta(chain_block_node):set_int("shadows", 0)
+			rays:inc_counter("reset")
+		end
 	end
 end
 
-local function update_blocks()
+function rays:update_blocks()
 	local start = os.clock()
 	-- loop for a fixed budget of 0.5 seconds
 	while os.clock() - start < 0.5 do
 		local block,high_priority
-		if #queues.hi > 0 then
-			block = table.remove(queues.hi)
+		if #self.queues.hi > 0 then
+			block = table.remove(self.queues.hi)
 			high_priority = true
-		elseif #queues.lo > 0 then
-			block = table.remove(queues.lo)
+		elseif #self.queues.lo > 0 then
+			block = table.remove(self.queues.lo)
 			high_priority = false
 		else
 			return
 		end
 
 		local close_enough = false
-		for _,player_block in pairs(players) do
+		for _,player_block in pairs(self.players) do
 			if math.max(math.max(math.abs(player_block.x-block.x), math.abs(player_block.y-block.y)), math.abs(player_block.z-block.z)) <= 5 then
 				close_enough = true
 			end
@@ -215,35 +236,49 @@ local function update_blocks()
 								if x ~= 0 or y ~= 0 or z ~= 0 then
 									mark_block_dirty(vector.add(block, vector.new(x, y, z)))
 									if high_priority then
-										table.insert(queues.lo, block)
+										table.insert(self.queues.lo, block)
+										self:inc_counter("requeue")
 									end
 								end
 							end
 						end
 					end
 				end
+			else
+				self:inc_counter("skip")
 			end
 		end
 	end
 end
 
-local function step()
-	watch_players()
-	update_blocks()
-	--minetest.chat_send_all("#queues.lo="..#queues.lo.." #queues.hi="..#queues.hi)
+function step()
+	rays:watch_players()
+	rays:update_blocks()
+	rays:dump_counters()
 	minetest.after(1, step)
 end
 
 minetest.after(1, step)
 
+-- register node transparency
+minetest.register_on_mods_loaded(function() rays:load_definitions() end)
+
+minetest.register_on_joinplayer(function(player)
+	rays.players[player:get_player_name()] = to_block_pos(player:get_pos())
+end)
+
+minetest.register_on_leaveplayer(function(player)
+	rays.players[player:get_player_name()] = nil
+end)
+
 minetest.register_on_dignode(function(pos)
 	local block = to_block_pos(pos)
 	mark_block_dirty(block)
-	table.insert(queues.hi, block)
+	table.insert(rays.queues.hi, block)
 end)
 
 minetest.register_on_placenode(function(pos)
 	local block = to_block_pos(pos)
 	mark_block_dirty(block)
-	table.insert(queues.hi, block)
+	table.insert(rays.queues.hi, block)
 end)
