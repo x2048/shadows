@@ -75,7 +75,11 @@ function rays:update_shadows(min, max)
 				-- take the smallest transparency of self, +x and +z. this is to handle edges of walls, houses and caves
 				transparency = math.min(self.transparency[ data[i] ], math.min(self.transparency[ data[i - self.vector.x * delta] ], self.transparency[ data[i - self.vector.z * delta * va.zstride] ]))
 
-				ilight = light[source] * transparency
+				if light[source] > minetest.LIGHT_MAX then
+					ilight = light[source] * transparency
+				else
+					ilight = 0
+				end
 
 				if ilight < minlight then
 					minlight = ilight
@@ -92,27 +96,29 @@ function rays:update_shadows(min, max)
 	-- propagation / blur
 	if minlight ~= maxlight then
 		self:inc_counter("blur")
+
+		local points = {}
 		for y = max.y-min.y,0,-1 do
 			for z = 0,max.z-min.z do
 				for x = 0,max.x-min.x do
-					local i = origin + x + y*va.ystride + z*va.zstride
+					-- try current point and it's central reflection
+					points[1] = origin + x + y*va.ystride + z*va.zstride
+					points[2] = origin + max.x - min.x - x + (max.y - min.y - y)*va.ystride + (max.z - min.z - z)*va.zstride
 
-					local daylight = light[i]
+					for t = 1,2 do
+						i = points[t]
 
-					for dy = 1,-1,-1 do
-						for dx = -1,1 do
-							for dz = -1,1 do
-								-- if not self
-								if dx ~= 0 or dy ~= 0 or dz ~= 0 then
-									local sourcelight = self:decay(light[i + dx + dy*va.ystride + dz*va.zstride] or 0)
-									if sourcelight > daylight then
-										daylight = sourcelight
+						for dy = -1,1 do
+							for dx = -1,1 do
+								for dz = -1,1 do
+									ilight = self:decay(light[i + dx + dy*va.ystride + dz*va.zstride] or 0)
+									if ilight > light[i] then
+										light[i] = ilight
 									end
 								end
 							end
 						end
 					end
-					light[i] = daylight
 				end
 			end
 		end
