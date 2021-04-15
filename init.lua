@@ -136,7 +136,7 @@ function rays:update_shadows(min, max)
 			for x = 0,max.x-min.x do
 				i = origin + x + y*va.ystride + z*va.zstride
 				ilight = math.floor(maplight[i] / 16) * 16 + math.floor(light[i])
-				if maplight[i] ~= ilight then
+				if math.abs(maplight[i] - ilight) > 0.1 then
 					maplight[i] = ilight
 					dirty = true
 				end
@@ -267,6 +267,8 @@ function rays:update_blocks()
 			else
 				self:inc_counter("skip")
 			end
+		else
+			self:inc_counter("skip")
 		end
 	end
 end
@@ -274,7 +276,7 @@ end
 function step()
 	rays:watch_players()
 	rays:update_blocks()
-	rays:dump_counters()
+	--rays:dump_counters()
 	minetest.after(1, step)
 end
 
