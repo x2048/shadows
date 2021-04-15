@@ -66,20 +66,25 @@ function rays:update_shadows(min, max)
 	local i,delta,source,transparency,ilight
 
 	-- rays
-	for y = max.y-min.y,0,-1 do
-		for z = 0,max.z-min.z do
-			for x = 0,max.x-min.x do
+	for y = max.y-min.y+1,-1,-1 do
+		for z = -1,max.z-min.z+1 do
+			for x = -1,max.x-min.x+1 do
 				i = origin + x + y*va.ystride + z*va.zstride
-				delta = ((min.y + y)%(-self.vector.y) == 0 and 1 or 0) -- 2 to 1
-				source = i + va.ystride - self.vector.x * delta - self.vector.z * delta*va.zstride
-				-- take the smallest transparency of self, +x and +z. this is to handle edges of walls, houses and caves
-				transparency = math.min(self.transparency[ data[i] ], math.min(self.transparency[ data[i - self.vector.x * delta] ], self.transparency[ data[i - self.vector.z * delta * va.zstride] ]))
+				if y >= 0 and y <= max.y - min.y and x >= 0 and x <= max.x - min.x and z >= 0 and z <= max.z - min.z then
+					delta = ((min.y + y)%(-self.vector.y) == 0 and 1 or 0) -- 2 to 1
+					source = i + va.ystride - self.vector.x * delta - self.vector.z * delta*va.zstride
+					-- take the smallest transparency of self, +x and +z. this is to handle edges of walls, houses and caves
+					transparency = math.min(self.transparency[ data[i] ], math.min(self.transparency[ data[i - self.vector.x * delta] ], self.transparency[ data[i - self.vector.z * delta * va.zstride] ]))
 
-				if light[source] > minetest.LIGHT_MAX then
-					ilight = light[source] * transparency
+					if light[source] > minetest.LIGHT_MAX then
+						ilight = light[source] * transparency
+					else
+						ilight = 0
+					end
 				else
-					ilight = 0
+					ilight = light[i]
 				end
+
 
 				if ilight < minlight then
 					minlight = ilight
