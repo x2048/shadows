@@ -238,7 +238,7 @@ function rays:update_blocks()
 
 		local close_enough = false
 		for _,player_block in pairs(self.players) do
-			if math.max(math.max(math.abs(player_block.x-block.x), math.abs(player_block.y-block.y)), math.abs(player_block.z-block.z)) <= 5 then
+			if math.max(math.max(math.abs(player_block.x-block.x), math.abs(player_block.y-block.y)), math.abs(player_block.z-block.z)) <= 3 then
 				close_enough = true
 			end
 		end
