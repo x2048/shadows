@@ -14,6 +14,7 @@ local rays = {
 	players = {},
 	queues = { lo = {}, hi = {} },
 	counters = {},
+	blocksize = 16,
 	generation = 43,
 }
 
@@ -173,11 +174,11 @@ end
 
 
 local function to_block_pos(pos)
-	return vector.new(math.floor(pos.x / 16), math.floor(pos.y / 16), math.floor(pos.z / 16))
+	return vector.new(math.floor(pos.x / rays.blocksize), math.floor(pos.y / rays.blocksize), math.floor(pos.z / rays.blocksize))
 end
 
 local function to_node_pos(pos)
-	return vector.new(pos.x * 16, pos.y * 16, pos.z * 16)
+	return vector.new(pos.x * rays.blocksize, pos.y * rays.blocksize, pos.z * rays.blocksize)
 end
 
 local function same_pos(pos1, pos2)
@@ -246,8 +247,8 @@ function rays:update_blocks()
 		if close_enough then
 			local min = to_node_pos(block)
 			if minetest.get_meta(min):get_int("shadows") < rays.generation then
-				local max = vector.add(min, vector.new(15,15,15))
-				local dirty = rays:update_shadows(min, max)
+				local max = vector.add(min, vector.new(self.blocksize-1,self.blocksize-1,self.blocksize-1))
+				local edges = rays:update_shadows(min, max)
 				minetest.get_meta(min):set_int("shadows", rays.generation)
 				if dirty then
 					for y = 1,-1,-1 do
