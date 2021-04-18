@@ -15,7 +15,7 @@ local rays = {
 	queues = { lo = {}, hi = {} },
 	counters = {},
 	blocksize = 16,
-	generation = 43,
+	generation = 49,
 }
 
 
@@ -131,6 +131,10 @@ function rays:update_shadows(min, max)
 	end
 
 	-- write back to map
+	-- mark edges as dirty for chained processing
+	-- every edge has coordinates (x,y,z) and coords can take values 0 (coord == 0), 1 (coord > 0 and < max), 2 (coord == max)
+	-- index in the edges = x + 3*y + 9*z
+	local edges,ei = {}, 0
 	local dirty = false
 	for y = max.y-min.y,0,-1 do
 		for z = 0,max.z-min.z do
@@ -139,6 +143,13 @@ function rays:update_shadows(min, max)
 				ilight = math.floor(maplight[i] / 16) * 16 + math.floor(light[i])
 				if math.abs(maplight[i] - ilight) > 0.1 then
 					maplight[i] = ilight
+
+					-- calculate index of the edge
+					ei = (x > 0 and 1 or 0) + (x == max.x-min.x and 1 or 0) +
+							3 * ((y > 0 and 1 or 0) + (y == max.y-min.y and 1 or 0)) +
+							9 * ((z > 0 and 1 or 0) + (z == max.z-min.z and 1 or 0))
+
+					edges[ei] = true
 					dirty = true
 				end
 			end
@@ -151,7 +162,7 @@ function rays:update_shadows(min, max)
 		vm:write_to_map(false)
 		self:inc_counter("update")
 	end
-	return dirty
+	return dirty and edges or false
 end
 
 function rays:inc_counter(name)
@@ -250,11 +261,12 @@ function rays:update_blocks()
 				local max = vector.add(min, vector.new(self.blocksize-1,self.blocksize-1,self.blocksize-1))
 				local edges = rays:update_shadows(min, max)
 				minetest.get_meta(min):set_int("shadows", rays.generation)
-				if dirty then
+				if edges then
 					for y = 1,-1,-1 do
 						for x = -rays.vector.x,rays.vector.x,rays.vector.x == 0 and 1 or rays.vector.x do
 							for z = -rays.vector.z,rays.vector.z,rays.vector.z == 0 and 1 or rays.vector.z do
-								if x ~= 0 or y ~= 0 or z ~= 0 then
+								local ei = (x + 1) + 3 * (y + 1) + 9 * (z + 1)
+								if (x ~= 0 or y ~= 0 or z ~= 0) and edges[ei] then
 									mark_block_dirty(vector.add(block, vector.new(x, y, z)))
 									if high_priority then
 										table.insert(self.queues.lo, vector.add(block, vector.new(x, y, z)))
