@@ -286,9 +286,20 @@ function rays:update_blocks()
 	end
 end
 
+local m2pi = math.pi * 2
+function rays:update_vector()
+	local time = minetest.get_timeofday()
+	local new_generation = math.floor(24 * (minetest.get_day_count() + time))
+	if new_generation ~= self.test_generation then
+		self.vector = vector.new(math.floor(0.5-math.sin(m2pi * time)), 1 + math.abs(math.floor(2 * math.cos(m2pi * time))), math.floor(math.cos(m2pi * time)))
+		self.generation = new_generation
+	end
+end
+
 function step()
 	rays:watch_players()
 	rays:update_blocks()
+	rays:update_vector()
 	--rays:dump_counters()
 	minetest.after(1, step)
 end
