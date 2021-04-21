@@ -12,9 +12,11 @@ local rays = {
 	transparency = {},
 	buffers = { light = {}, content = {} },
 	players = {},
-	queues = { lo = {}, hi = {} },
 	counters = {},
 	blocksize = 16,
+	depth = 7,
+	hfov = 1.7,
+	vfov = 1.1,
 	generation = 49,
 }
 
@@ -170,16 +172,23 @@ function rays:inc_counter(name)
 end
 
 function rays:dump_counters()
-	local s = "hi="..#rays.queues.hi.." lo="..#rays.queues.lo
+	local queue_length = 0
+	local queue
+	for _,state in pairs(self.players) do
+		queue = state.queue or {}
+		queue_length = queue_length + #queue - (queue.count or 0)
+	end
+	local s = "queue_length="..queue_length
 	local counters = rays.counters
 	rays.counters = {}
-	for _,name in ipairs({"ignored", "calc", "blur", "update", "skip", "reset", "requeue" }) do
+	for _,name in ipairs({"ignore", "queue", "dequeue", "calc", "blur", "update", "skip", "reset", "requeue" }) do
 		s = s.." "..name.."="..(counters[name] or 0)
 		counters[name] = nil
 	end
 	for name,value in pairs(counters) do
 		s = s.." "..name.."="..value
 	end
+	s = s.." time="..math.floor(minetest.get_timeofday() * 24000)
 	minetest.chat_send_all(s)
 end
 
@@ -197,23 +206,33 @@ local function same_pos(pos1, pos2)
 end
 
 function rays:watch_players()
-	for name,previous_block in pairs(self.players) do
+	for name,previous in pairs(self.players) do
 		player = minetest.get_player_by_name(name)
+		local look_direction = vector.normalize(player:get_look_dir())
 		player_block = to_block_pos(player:get_pos())
-		if not same_pos(player_block, previous_block) then
-			self.players[name] = player_block
-			for y = -3,3 do
-				for x = -3,3 do
-					for z = -3,3 do
-						local block = vector.add(player_block, vector.new(x, y, z))
-						if minetest.get_meta(to_node_pos(block)):get_int("shadows") < rays.generation then
-							if math.abs(x) + math.abs(y) + math.abs(z) <= 1 then
-								table.insert(self.queues.hi, block)
-							else
-								table.insert(self.queues.lo, block)
-							end
+		if not (vector.equals(player_block, previous.block or vector.new(0,0,0)) and vector.equals(look_direction, previous.direction or vector.new(0,1,0)) and self.generation == previous.generation) then
+			self.players[name] = { block = player_block, direction = look_direction, generation = rays.generation, queue = {} }
+
+			local side = vector.normalize(vector.cross(look_direction, vector.new(0, 1, 0)))
+			local up = vector.normalize(vector.cross(look_direction, side))
+			local block,node_pos
+
+			for d = 0,self.depth do
+				for u = -math.floor(self.hfov*d),math.floor(self.hfov*d) do
+					for w = -math.floor(self.vfov*d),math.floor(self.vfov*d) do
+						block = vector.add(player_block, vector.multiply(look_direction, d))
+						block = vector.add(block, vector.multiply(side, u))
+						block = vector.add(block, vector.multiply(up, w))
+						block = vector.floor(block)
+
+						node_pos = to_node_pos(block)
+
+
+						if minetest.get_node_or_nil(node_pos) ~= nil and minetest.get_meta(node_pos):get_int("shadows") < self.generation then
+							table.insert(self.players[name].queue, block)
+							self:inc_counter("queue")
 						else
-							self:inc_counter("ignored")
+							self:inc_counter("ignore")
 						end
 					end
 				end
@@ -234,30 +253,37 @@ local function mark_block_dirty(block)
 end
 
 function rays:update_blocks()
+	local queues = {}
+	for _, state in pairs(self.players) do
+		if state.queue ~= nil and #state.queue > 0 then
+			table.insert(queues, state.queue)
+		end
+	end
+
+	if #queues == 0 then
+		return
+	end
+
 	local start = os.clock()
-	-- loop for a fixed budget of 0.5 seconds
-	while os.clock() - start < 0.5 do
-		local block,high_priority
-		if #self.queues.hi > 0 then
-			block = table.remove(self.queues.hi)
-			high_priority = true
-		elseif #self.queues.lo > 0 then
-			block = table.remove(self.queues.lo)
-			high_priority = false
-		else
-			return
+	local i = 1
+	local empty_queues = 0
+	-- loop for a fixed budget of 0.5 seconds or until everything's processed
+	while os.clock() - start < 0.5 and empty_queues < #queues do
+		local block
+		if #queues[i] > (queues[i].count or 0) then
+			-- this is a fancy way to dequeue from the head of the queue
+			queues[i].count = (queues[i].count or 0) + 1
+			block = queues[i][queues[i].count]
+			queues[i][queues[i].count] = nil
+			self:inc_counter("dequeue")
+		elseif queues[i].count ~= nil then
+			empty_queues = empty_queues + 1
+			queues[i].count = nil
 		end
 
-		local close_enough = false
-		for _,player_block in pairs(self.players) do
-			if math.max(math.max(math.abs(player_block.x-block.x), math.abs(player_block.y-block.y)), math.abs(player_block.z-block.z)) <= 3 then
-				close_enough = true
-			end
-		end
-
-		if close_enough then
+		if block ~= nil then
 			local min = to_node_pos(block)
-			if minetest.get_meta(min):get_int("shadows") < rays.generation then
+			if minetest.get_meta(min):get_int("shadows") < self.generation then
 				local max = vector.add(min, vector.new(self.blocksize-1,self.blocksize-1,self.blocksize-1))
 				local edges = rays:update_shadows(min, max)
 				minetest.get_meta(min):set_int("shadows", rays.generation)
@@ -268,10 +294,6 @@ function rays:update_blocks()
 								local ei = (x + 1) + 3 * (y + 1) + 9 * (z + 1)
 								if (x ~= 0 or y ~= 0 or z ~= 0) and edges[ei] then
 									mark_block_dirty(vector.add(block, vector.new(x, y, z)))
-									if high_priority then
-										table.insert(self.queues.lo, vector.add(block, vector.new(x, y, z)))
-										self:inc_counter("requeue")
-									end
 								end
 							end
 						end
@@ -280,9 +302,8 @@ function rays:update_blocks()
 			else
 				self:inc_counter("skip")
 			end
-		else
-			self:inc_counter("skip")
 		end
+		i = i % #queues + 1
 	end
 end
 
@@ -320,11 +341,9 @@ end)
 minetest.register_on_dignode(function(pos)
 	local block = to_block_pos(pos)
 	mark_block_dirty(block)
-	table.insert(rays.queues.hi, block)
 end)
 
 minetest.register_on_placenode(function(pos)
 	local block = to_block_pos(pos)
 	mark_block_dirty(block)
-	table.insert(rays.queues.hi, block)
 end)
