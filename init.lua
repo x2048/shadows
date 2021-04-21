@@ -318,9 +318,12 @@ function rays:update_vector()
 end
 
 function step()
-	rays:watch_players()
-	rays:update_blocks()
-	rays:update_vector()
+	local time = minetest.get_timeofday()
+	if time >= 4/24 and time < 20/24 then
+		rays:watch_players()
+		rays:update_blocks()
+		rays:update_vector()
+	end
 	--rays:dump_counters()
 	minetest.after(1, step)
 end
