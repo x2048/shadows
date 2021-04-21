@@ -188,7 +188,6 @@ function rays:dump_counters()
 	for name,value in pairs(counters) do
 		s = s.." "..name.."="..value
 	end
-	s = s.." time="..math.floor(minetest.get_timeofday() * 24000)
 	minetest.chat_send_all(s)
 end
 
@@ -309,11 +308,12 @@ end
 
 local m2pi = math.pi * 2
 function rays:update_vector()
-	local time = minetest.get_timeofday()
-	local new_generation = math.floor(24 * (minetest.get_day_count() + time))
-	if new_generation ~= self.test_generation then
-		self.vector = vector.new(math.floor(0.5-math.sin(m2pi * time)), 1 + math.abs(math.floor(2 * math.cos(m2pi * time))), math.floor(math.cos(m2pi * time)))
-		self.generation = new_generation
+	local time = math.floor(48 * minetest.get_timeofday()) / 48
+	local adj_time = math.min(19/24, 6/24 + math.max(0, time - 7/24) * 6/5)
+	local new_vector = vector.new(math.floor(0.5-math.sin(m2pi * adj_time)), -1 - math.abs(math.floor(2 * math.cos(m2pi * adj_time))), math.floor(math.cos(m2pi * adj_time)))
+	if not vector.equals(self.vector, new_vector) then
+		self.vector = new_vector
+		self.generation = math.floor(48 * (minetest.get_day_count() + time))
 	end
 end
 
