@@ -56,7 +56,7 @@ function shadows:load_definitions()
 		local id = minetest.get_content_id(name)
 		if node._transparency then
 			self.transparency[id] = node._transparency
-		elseif node.sunlight_propagates then
+		elseif id == minetest.CONTENT_IGNORE or node.sunlight_propagates then
 			self.transparency[id] = 1
 		elseif node.drawtype == "airlike" or node.drawtype == "torchlike" or node.drawtype == "firelike" or node.drawtype == "plantlike" then
 			self.transparency[id] = 1
@@ -66,10 +66,10 @@ function shadows:load_definitions()
 			self.transparency[id] = 0.9
 		elseif node.drawtype == "allfaces" or node.drawtype == "allfaces_optional" then 
 			self.transparency[id] = 0.8
-		elseif node.drawtype == "fencelike" or node.drawtype == "raillike" then
-			self.transparency[id] = 0
+		elseif node.drawtype == "normal" then
+			self.transparency[id] = 0	 -- solid
 		else
-			self.transparency[id] = 0
+			self.transparency[id] = 0.01 -- not fully solid but casts shadow
 		end 
 	end
 end
@@ -110,7 +110,7 @@ function shadows:update_shadows(min, max)
 					transparency = math.min(self.transparency[ data[i] ], math.min(self.transparency[ data[i - self.vector.x * delta] ], self.transparency[ data[i - self.vector.z * delta * va.zstride] ]))
 
 					if light[source] > minetest.LIGHT_MAX then
-						ilight = light[source] * transparency
+						ilight = light[source] * transparency -- project ray
 					else
 						ilight = 0
 					end
@@ -136,7 +136,7 @@ function shadows:update_shadows(min, max)
 		self:inc_counter("blur")
 
 		local points = {}
-		for y = max.y-min.y,0,-1 do
+		for y = 0,max.y-min.y do
 			for z = 0,max.z-min.z do
 				for x = 0,max.x-min.x do
 					-- try current point and it's central reflection
@@ -146,16 +146,19 @@ function shadows:update_shadows(min, max)
 					for t = 1,2 do
 						i = points[t]
 
-						for dy = -1,1 do
-							for dx = -1,1 do
-								for dz = -1,1 do
-									ilight = decay_light((light[i + dx + dy*va.ystride + dz*va.zstride] or 0),
-											self.map_params.decay_minimum_light,
-											self.map_params.decay_light_threshold,
-											self.map_params.decay_factor_bright,
-											self.map_params.decay_factor_dark)
-									if ilight > light[i] then
-										light[i] = ilight
+						-- only propagate light through non-solid nodes
+						if self.transparency[ data[i] ] ~= 0 then
+							for dy = -1,1 do
+								for dx = -1,1 do
+									for dz = -1,1 do
+										ilight = decay_light((light[i + dx + dy*va.ystride + dz*va.zstride] or 0),
+												self.map_params.decay_minimum_light,
+												self.map_params.decay_light_threshold,
+												self.map_params.decay_factor_bright,
+												self.map_params.decay_factor_dark)
+										if ilight > light[i] then
+											light[i] = ilight
+										end
 									end
 								end
 							end
@@ -172,11 +175,12 @@ function shadows:update_shadows(min, max)
 	-- index in the edges = x + 3*y + 9*z
 	local edges,ei = {}, 0
 	local dirty = false
-	for y = max.y-min.y,0,-1 do
+	for y = 0,max.y-min.y do
 		for z = 0,max.z-min.z do
 			for x = 0,max.x-min.x do
 				i = origin + x + y*va.ystride + z*va.zstride
-				ilight = math.floor(maplight[i] / 16) * 16 + math.floor(light[i])
+				ilight = math.max(light[i], math.floor(maplight[i] / 16)) -- copy nightlight / artificial light
+				ilight = math.floor(maplight[i] / 16) * 16 + math.floor(ilight)
 				if math.abs(maplight[i] - ilight) > 0.1 then
 					maplight[i] = ilight
 
@@ -245,10 +249,6 @@ local function to_node_pos(pos, bs)
 	return vector.new(pos.x * bs, pos.y * bs, pos.z * bs)
 end
 
-local function same_pos(pos1, pos2)
-	return pos1.x == pos2.x and pos1.y == pos2.y and pos1.z == pos2.z
-end
-
 function shadows:watch_players()
 	-- ensure generation is set
 	if self.generation == nil then
@@ -262,29 +262,44 @@ function shadows:watch_players()
 		player = minetest.get_player_by_name(name)
 		local look_direction = vector.normalize(player:get_look_dir())
 		player_block = to_block_pos(player:get_pos(), self.map_params.blocksize)
-		if not (vector.equals(player_block, previous.block or vector.new(0,0,0)) and vector.equals(look_direction, previous.direction or vector.new(0,1,0)) and self.generation == previous.generation) then
-			self.players[name] = { block = player_block, direction = look_direction, generation = shadows.generation, queue = {} }
+		self.players[name] = { block = player_block, direction = look_direction, generation = shadows.generation, queue = {} }
 
-			local side = vector.normalize(vector.cross(look_direction, vector.new(0, 1, 0)))
-			local up = vector.normalize(vector.cross(look_direction, side))
-			local block,node_pos
+		local side = vector.normalize(vector.cross(look_direction, vector.new(0, 1, 0)))
+		local up = vector.normalize(vector.cross(look_direction, side))
+		local block,node_pos
 
-			for d = 0,self.max_distance do
-				for u = -math.floor(self.hfov*d),math.floor(self.hfov*d) do
-					for w = -math.floor(self.vfov*d),math.floor(self.vfov*d) do
-						block = vector.add(player_block, vector.multiply(look_direction, d))
-						block = vector.add(block, vector.multiply(side, u))
-						block = vector.add(block, vector.multiply(up, w))
-						block = vector.floor(block)
+		local blocks_queued = 0
+		local n = 4
+		local blocks_seen = {}
+		for d = 0,n*self.max_distance do
+			for u = 0,math.floor(self.hfov*d) do
+				for v = 0,math.floor(self.vfov*d) do
+					for su=-1,1,2 do
+						for sv=-1,1,2 do
+							if blocks_queued >= 100 then
+								break
+							end
 
-						node_pos = to_node_pos(block, self.map_params.blocksize)
+							block = vector.add(player_block, vector.multiply(look_direction, d/n))
+							block = vector.add(block, vector.multiply(side, su*u/n))
+							block = vector.add(block, vector.multiply(up, sv*v/n))
+							block = vector.floor(block)
+
+							if blocks_seen[minetest.hash_node_position(block)] then
+								break
+							end
+							blocks_seen[minetest.hash_node_position(block)] = true
+
+							node_pos = to_node_pos(block, self.map_params.blocksize)
 
 
-						if minetest.get_node_or_nil(node_pos) ~= nil and minetest.get_meta(node_pos):get_int("shadows") < self.generation then
-							table.insert(self.players[name].queue, block)
-							self:inc_counter("queue")
-						else
-							self:inc_counter("ignore")
+							if minetest.get_node_or_nil(node_pos) ~= nil and minetest.get_meta(node_pos):get_int("shadows:gen") < self.generation then
+								table.insert(self.players[name].queue, block)
+								blocks_queued = blocks_queued + 1
+								self:inc_counter("queue")
+							else
+								self:inc_counter("ignore")
+							end
 						end
 					end
 				end
@@ -297,8 +312,8 @@ function shadows:mark_block_dirty(block)
 	local chain_block_node = to_node_pos(block, self.map_params.blocksize)
 	if minetest.get_node_or_nil(chain_block_node) ~= nil then
 		local meta = minetest.get_meta(chain_block_node)
-		if meta:get_int("shadows") ~= 0 then
-			minetest.get_meta(chain_block_node):set_int("shadows", 0)
+		if meta:get_int("shadows:gen") ~= 0 then
+			minetest.get_meta(chain_block_node):set_int("shadows:gen", 0)
 			shadows:inc_counter("reset")
 		end
 	end
@@ -335,10 +350,10 @@ function shadows:update_blocks()
 
 		if block ~= nil then
 			local min = to_node_pos(block, self.map_params.blocksize)
-			if minetest.get_meta(min):get_int("shadows") < self.generation then
+			if minetest.get_meta(min):get_int("shadows:gen") < self.generation then
 				local max = vector.add(min, vector.new(self.map_params.blocksize-1,self.map_params.blocksize-1,self.map_params.blocksize-1))
 				local edges = shadows:update_shadows(min, max)
-				minetest.get_meta(min):set_int("shadows", shadows.generation)
+				minetest.get_meta(min):set_int("shadows:gen", shadows.generation)
 				if edges then
 					for y = 1,-1,-1 do
 						for x = -shadows.vector.x,shadows.vector.x,shadows.vector.x == 0 and 1 or shadows.vector.x do
@@ -377,8 +392,8 @@ function step()
 	local time = minetest.get_timeofday()
 	if time >= 4/24 and time < 20/24 then
 		shadows:watch_players()
-		shadows:update_blocks()
 		shadows:update_vector()
+		shadows:update_blocks()
 		shadows:dump_counters()
 	end
 	minetest.after(1, step)
