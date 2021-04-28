@@ -1,0 +1,63 @@
+[Light Propagation]
+# Specfy the minimum value for naturally spread Light
+# Values higher than 3 enable ambient light in caves
+shadows.decay_minimum_light (Minimum Light Level) int 3 0 14
+
+# This value specifies the boundary between dark and bright light tones
+# Light values above the threshold will propagate with decay factor for bright tones,
+# and values below the threshold will use decay factor for dark tones.
+shadows.decay_light_threshold (Dark tone threshold) int 9 0 14
+
+# This value specifies propagation decay factor for dark tones,
+# i.e. which portion of light propagates to the next node further 
+# from the light source or sunlight rays.
+#
+# Lower values will produce darker shadows with more contrast.
+#
+# NB: Values above 0.9 will produce phantom light when
+# placing and removing light sources (torches) in caves
+shadows.decay_factor_dark (Dark tones decay factor) float 0.85 0.0 0.99
+
+# This value specifies propagation decay factor for bright tones,
+# i.e. which portion of light propagates to the next node further 
+# from the light source or sunlight rays.
+# 
+# Lower values will produce darker shadows with more contrast.
+#
+# NB: Values above 0.9 will produce phantom light when
+# placing and removing light sources (torches) in caves
+shadows.decay_factor_bright (Bright tones decay factor) float 0.8 0.0 0.99
+
+[Performance]
+# Specify maximum distance from the player where the shadows
+# should be calculated.
+#
+# Note, that the number of mapblocks to process grows exponentially 
+# with the distance, and values higher than 7 will lead to constant 
+# CPU load.
+shadows.max_distance (Maximum distance) int 7 3 24
+
+# Specify how many milliseconds to spend every second to calculate shadows
+# Higher values increase the speed of calculation but cause higher CPU load.
+shadows.time_budget (Time budget) int 500 100 900
+
+# Enable shadows to follow sun movement during the day. 
+#
+# This may change and improve gameplay in certain games, but will increase 
+# CPU load and produce visual artifacts in many cases (e.g. large mountains)
+shadows.follow_sun (Follow Sun) bool false
+
+[Diagnostics]
+# Enable logging of internal counters to the game chat
+#
+# Counters:
+# - queue_length - current total length of all queues of all players
+# - ignore - number of blocks scanned and ignored by player (being up-to-date)
+# - queue - number of blocks queued by player
+# - dequeue - number of blocks picked from the queue
+# - calc - number of blocks where shadows were recalculated
+# - blur - number of times light propagation was calculated
+# - update - number of blocks actually changed
+# - skip - number of blocks skipped on dequeueing
+# - requeue - number of blocks re-added to the queue for a later update
+shadows.log_counters (Log counters) bool false

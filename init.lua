@@ -1,27 +1,57 @@
--- cache
-local rays = {
-	size = 50,
-	interval = 60,
-	params = {
-		minlight = 2,
-		threshold = 9,
-		a1 = 0.8,
-		a2 = 0.85
+local shadows = {
+	map_params = {
+		decay_minimum_light = 3,
+		decay_light_threshold = 9,
+		decay_factor_bright = 0.8,
+		decay_factor_dark = 0.85,
+		follow_sun = false,
+		blocksize = 16,
 	},
+	max_distance = 7,
+	time_budget = 500,
+	log_counters = false,
+	hfov = 1.1,
+	vfov = 1.4,
 	vector = vector.new(-1, -2, 1),
 	transparency = {},
 	buffers = { light = {}, content = {} },
 	players = {},
 	counters = {},
-	blocksize = 16,
-	depth = 7,
-	hfov = 1.7,
-	vfov = 1.1,
-	generation = 49,
 }
 
+local storage = minetest.get_mod_storage()
 
-function rays:load_definitions()
+-- initialize
+function shadows:initialize()
+	-- read from minetest.conf using initial settings as defaults
+	self.map_params.decay_minimum_light = tonumber(minetest.settings:get("shadows.decay_minimum_light")) or self.map_params.decay_minimum_light
+	self.map_params.decay_light_threshold = tonumber(minetest.settings:get("shadows.decay_light_threshold")) or self.map_params.decay_light_threshold
+	self.map_params.decay_factor_bright = tonumber(minetest.settings:get("shadows.decay_factor_bright")) or self.map_params.decay_factor_bright
+	self.map_params.decay_factor_dark = tonumber(minetest.settings:get("shadows.decay_factor_dark")) or self.map_params.decay_factor_dark
+	self.map_params.follow_sun = minetest.settings:get("shadows.follow_sun") == nil and self.map_params.follow_sun or minetest.settings:get("shadows.follow_sun") == "true"
+
+	self.max_distance = tonumber(minetest.settings:get("shadows.max_distance")) or self.max_distance
+	self.time_budget = tonumber(minetest.settings:get("shadows.time_budget")) or self.time_budget
+	self.log_counters = minetest.settings:get("shadows.log_counters") == nil and self.log_counters or minetest.settings:get("shadows.log_counters") == "true"
+
+	-- detect changed settings and set the generation
+	self.params_dirty = false
+
+	for key,value in pairs(self.map_params) do
+		if tostring(value) ~= storage:get(key) then
+			storage:set_string(key, tostring(value))
+			self.params_dirty = true
+		end
+	end
+
+	if storage:get("generation") ~= nil and not self.params_dirty then
+		self.generation = tonumber(storage:get("generation"))
+	end
+end
+
+shadows:initialize()
+
+function shadows:load_definitions()
 	for name,node in pairs(minetest.registered_nodes) do
 		local id = minetest.get_content_id(name)
 		if node._transparency then
@@ -44,12 +74,12 @@ function rays:load_definitions()
 	end
 end
 
-function rays:decay(light)
-	return math.max(self.params.minlight, light > self.params.threshold and light * self.params.a1 or light * self.params.a2)
+local function decay_light(light, min, th, fbright, fdark)
+	return math.max(min, light >= th and light * fbright or light * fdark)
 end
 
 
-function rays:update_shadows(min, max)
+function shadows:update_shadows(min, max)
 	local vm = minetest.get_voxel_manip(vector.add(min, vector.new(-1,-1,-1)), vector.add(max, vector.new(1,1,1)))
 	local minedge, maxedge = vm:get_emerged_area()
 	local va = VoxelArea:new{MinEdge = minedge, MaxEdge = maxedge}
@@ -68,7 +98,7 @@ function rays:update_shadows(min, max)
 	local maxlight = 0
 	local i,delta,source,transparency,ilight
 
-	-- rays
+	-- shadows
 	for y = max.y-min.y+1,-1,-1 do
 		for z = -1,max.z-min.z+1 do
 			for x = -1,max.x-min.x+1 do
@@ -119,7 +149,11 @@ function rays:update_shadows(min, max)
 						for dy = -1,1 do
 							for dx = -1,1 do
 								for dz = -1,1 do
-									ilight = self:decay(light[i + dx + dy*va.ystride + dz*va.zstride] or 0)
+									ilight = decay_light((light[i + dx + dy*va.ystride + dz*va.zstride] or 0),
+											self.map_params.decay_minimum_light,
+											self.map_params.decay_light_threshold,
+											self.map_params.decay_factor_bright,
+											self.map_params.decay_factor_dark)
 									if ilight > light[i] then
 										light[i] = ilight
 									end
@@ -167,56 +201,75 @@ function rays:update_shadows(min, max)
 	return dirty and edges or false
 end
 
-function rays:inc_counter(name)
-	self.counters[name] = (self.counters[name] or 0) + 1
+if shadows.log_counters then
+	function shadows:inc_counter(name)
+		self.counters[name] = (self.counters[name] or 0) + 1
+	end
+
+	function shadows:dump_counters()
+		if not self.log_counters then
+			return
+		end
+
+		local queue_length = 0
+		local queue
+		for _,state in pairs(self.players) do
+			queue = state.queue or {}
+			queue_length = queue_length + #queue - (queue.count or 0)
+		end
+		local s = "queue_length="..queue_length
+		local counters = self.counters
+		self.counters = {}
+		for _,name in ipairs({"ignore", "queue", "dequeue", "calc", "blur", "update", "skip", "reset", "requeue" }) do
+			s = s.." "..name.."="..(counters[name] or 0)
+			counters[name] = nil
+		end
+		for name,value in pairs(counters) do
+			s = s.." "..name.."="..value
+		end
+		s = s.." generation="..self.generation
+		s = s.." params_dirty="..tostring(self.params_dirty)
+		s = s.." params="..dump(self.map_params,"")
+		minetest.chat_send_all(s)
+	end
+else
+	function shadows:inc_counter(name) end
+	function shadows:dump_counters() end
 end
 
-function rays:dump_counters()
-	local queue_length = 0
-	local queue
-	for _,state in pairs(self.players) do
-		queue = state.queue or {}
-		queue_length = queue_length + #queue - (queue.count or 0)
-	end
-	local s = "queue_length="..queue_length
-	local counters = rays.counters
-	rays.counters = {}
-	for _,name in ipairs({"ignore", "queue", "dequeue", "calc", "blur", "update", "skip", "reset", "requeue" }) do
-		s = s.." "..name.."="..(counters[name] or 0)
-		counters[name] = nil
-	end
-	for name,value in pairs(counters) do
-		s = s.." "..name.."="..value
-	end
-	minetest.chat_send_all(s)
+local function to_block_pos(pos, bs)
+	return vector.new(math.floor(pos.x / bs), math.floor(pos.y / bs), math.floor(pos.z / bs))
 end
 
-
-local function to_block_pos(pos)
-	return vector.new(math.floor(pos.x / rays.blocksize), math.floor(pos.y / rays.blocksize), math.floor(pos.z / rays.blocksize))
-end
-
-local function to_node_pos(pos)
-	return vector.new(pos.x * rays.blocksize, pos.y * rays.blocksize, pos.z * rays.blocksize)
+local function to_node_pos(pos, bs)
+	return vector.new(pos.x * bs, pos.y * bs, pos.z * bs)
 end
 
 local function same_pos(pos1, pos2)
 	return pos1.x == pos2.x and pos1.y == pos2.y and pos1.z == pos2.z
 end
 
-function rays:watch_players()
+function shadows:watch_players()
+	-- ensure generation is set
+	if self.generation == nil then
+		self.generation = 48*(minetest.get_day_count() + minetest.get_timeofday())
+		minetest.chat_send_all("setting new generation to "..self.generation)
+		storage:set_string("generation", tostring(self.generation))
+	end
+
+	-- scan players and update the queues
 	for name,previous in pairs(self.players) do
 		player = minetest.get_player_by_name(name)
 		local look_direction = vector.normalize(player:get_look_dir())
-		player_block = to_block_pos(player:get_pos())
+		player_block = to_block_pos(player:get_pos(), self.map_params.blocksize)
 		if not (vector.equals(player_block, previous.block or vector.new(0,0,0)) and vector.equals(look_direction, previous.direction or vector.new(0,1,0)) and self.generation == previous.generation) then
-			self.players[name] = { block = player_block, direction = look_direction, generation = rays.generation, queue = {} }
+			self.players[name] = { block = player_block, direction = look_direction, generation = shadows.generation, queue = {} }
 
 			local side = vector.normalize(vector.cross(look_direction, vector.new(0, 1, 0)))
 			local up = vector.normalize(vector.cross(look_direction, side))
 			local block,node_pos
 
-			for d = 0,self.depth do
+			for d = 0,self.max_distance do
 				for u = -math.floor(self.hfov*d),math.floor(self.hfov*d) do
 					for w = -math.floor(self.vfov*d),math.floor(self.vfov*d) do
 						block = vector.add(player_block, vector.multiply(look_direction, d))
@@ -224,7 +277,7 @@ function rays:watch_players()
 						block = vector.add(block, vector.multiply(up, w))
 						block = vector.floor(block)
 
-						node_pos = to_node_pos(block)
+						node_pos = to_node_pos(block, self.map_params.blocksize)
 
 
 						if minetest.get_node_or_nil(node_pos) ~= nil and minetest.get_meta(node_pos):get_int("shadows") < self.generation then
@@ -240,18 +293,18 @@ function rays:watch_players()
 	end
 end
 
-local function mark_block_dirty(block)
-	local chain_block_node = to_node_pos(block)
+function shadows:mark_block_dirty(block)
+	local chain_block_node = to_node_pos(block, self.map_params.blocksize)
 	if minetest.get_node_or_nil(chain_block_node) ~= nil then
 		local meta = minetest.get_meta(chain_block_node)
 		if meta:get_int("shadows") ~= 0 then
 			minetest.get_meta(chain_block_node):set_int("shadows", 0)
-			rays:inc_counter("reset")
+			shadows:inc_counter("reset")
 		end
 	end
 end
 
-function rays:update_blocks()
+function shadows:update_blocks()
 	local queues = {}
 	for _, state in pairs(self.players) do
 		if state.queue ~= nil and #state.queue > 0 then
@@ -266,8 +319,8 @@ function rays:update_blocks()
 	local start = os.clock()
 	local i = 1
 	local empty_queues = 0
-	-- loop for a fixed budget of 0.5 seconds or until everything's processed
-	while os.clock() - start < 0.5 and empty_queues < #queues do
+	-- loop for the configurd budget or until everything's processed
+	while os.clock() - start < self.time_budget / 1000 and empty_queues < #queues do
 		local block
 		if #queues[i] > (queues[i].count or 0) then
 			-- this is a fancy way to dequeue from the head of the queue
@@ -281,18 +334,18 @@ function rays:update_blocks()
 		end
 
 		if block ~= nil then
-			local min = to_node_pos(block)
+			local min = to_node_pos(block, self.map_params.blocksize)
 			if minetest.get_meta(min):get_int("shadows") < self.generation then
-				local max = vector.add(min, vector.new(self.blocksize-1,self.blocksize-1,self.blocksize-1))
-				local edges = rays:update_shadows(min, max)
-				minetest.get_meta(min):set_int("shadows", rays.generation)
+				local max = vector.add(min, vector.new(self.map_params.blocksize-1,self.map_params.blocksize-1,self.map_params.blocksize-1))
+				local edges = shadows:update_shadows(min, max)
+				minetest.get_meta(min):set_int("shadows", shadows.generation)
 				if edges then
 					for y = 1,-1,-1 do
-						for x = -rays.vector.x,rays.vector.x,rays.vector.x == 0 and 1 or rays.vector.x do
-							for z = -rays.vector.z,rays.vector.z,rays.vector.z == 0 and 1 or rays.vector.z do
+						for x = -shadows.vector.x,shadows.vector.x,shadows.vector.x == 0 and 1 or shadows.vector.x do
+							for z = -shadows.vector.z,shadows.vector.z,shadows.vector.z == 0 and 1 or shadows.vector.z do
 								local ei = (x + 1) + 3 * (y + 1) + 9 * (z + 1)
 								if (x ~= 0 or y ~= 0 or z ~= 0) and edges[ei] then
-									mark_block_dirty(vector.add(block, vector.new(x, y, z)))
+									self:mark_block_dirty(vector.add(block, vector.new(x, y, z)))
 								end
 							end
 						end
@@ -307,7 +360,10 @@ function rays:update_blocks()
 end
 
 local m2pi = math.pi * 2
-function rays:update_vector()
+function shadows:update_vector()
+	if not self.map_params.follow_sun then
+		return
+	end
 	local time = math.floor(48 * minetest.get_timeofday()) / 48
 	local adj_time = math.min(19/24, 6/24 + math.max(0, time - 7/24) * 6/5)
 	local new_vector = vector.new(math.floor(0.5-math.sin(m2pi * adj_time)), -1 - math.abs(math.floor(2 * math.cos(m2pi * adj_time))), math.floor(math.cos(m2pi * adj_time)))
@@ -320,33 +376,33 @@ end
 function step()
 	local time = minetest.get_timeofday()
 	if time >= 4/24 and time < 20/24 then
-		rays:watch_players()
-		rays:update_blocks()
-		rays:update_vector()
+		shadows:watch_players()
+		shadows:update_blocks()
+		shadows:update_vector()
+		shadows:dump_counters()
 	end
-	--rays:dump_counters()
 	minetest.after(1, step)
 end
 
 minetest.after(1, step)
 
 -- register node transparency
-minetest.register_on_mods_loaded(function() rays:load_definitions() end)
+minetest.register_on_mods_loaded(function() shadows:load_definitions() end)
 
 minetest.register_on_joinplayer(function(player)
-	rays.players[player:get_player_name()] = to_block_pos(player:get_pos())
+	shadows.players[player:get_player_name()] = to_block_pos(player:get_pos(), shadows.map_params.blocksize)
 end)
 
 minetest.register_on_leaveplayer(function(player)
-	rays.players[player:get_player_name()] = nil
+	shadows.players[player:get_player_name()] = nil
 end)
 
 minetest.register_on_dignode(function(pos)
-	local block = to_block_pos(pos)
-	mark_block_dirty(block)
+	local block = to_block_pos(pos, shadows.map_params.blocksize)
+	shadows:mark_block_dirty(block)
 end)
 
 minetest.register_on_placenode(function(pos)
-	local block = to_block_pos(pos)
-	mark_block_dirty(block)
+	local block = to_block_pos(pos, shadows.map_params.blocksize)
+	shadows:mark_block_dirty(block)
 end)
