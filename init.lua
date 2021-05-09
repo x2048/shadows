@@ -136,6 +136,7 @@ function shadows:update_shadows(min, max)
 		self:inc_counter("blur")
 
 		local points = {}
+		local strides = { 1, va.ystride, va.zstride }
 		for y = 0,max.y-min.y do
 			for z = 0,max.z-min.z do
 				for x = 0,max.x-min.x do
@@ -148,17 +149,15 @@ function shadows:update_shadows(min, max)
 
 						-- only propagate light through non-solid nodes
 						if self.transparency[ data[i] ] ~= 0 then
-							for dy = -1,1 do
-								for dx = -1,1 do
-									for dz = -1,1 do
-										ilight = decay_light((light[i + dx + dy*va.ystride + dz*va.zstride] or 0),
-												self.map_params.decay_minimum_light,
-												self.map_params.decay_light_threshold,
-												self.map_params.decay_factor_bright,
-												self.map_params.decay_factor_dark)
-										if ilight > light[i] then
-											light[i] = ilight
-										end
+							for d = -1,1,2 do
+								for stride = 1,#strides do
+									ilight = decay_light((light[i + d*strides[stride]] or 0),
+											self.map_params.decay_minimum_light,
+											self.map_params.decay_light_threshold,
+											self.map_params.decay_factor_bright,
+											self.map_params.decay_factor_dark)
+									if ilight > light[i] then
+										light[i] = ilight
 									end
 								end
 							end
