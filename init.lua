@@ -78,6 +78,36 @@ local function decay_light(light, min, th, fbright, fdark)
 	return math.max(min, light >= th and light * fbright or light * fdark)
 end
 
+local function vector_to_sequence(v)
+	local result = {}
+	local acc = vector.new(0,0,0)
+	local sign = vector.new(v.x > 0 and 1 or -1, v.y > 0 and 1 or -1, v.z > 0 and 1 or -1)
+	local l = vector.length(v)
+	while vector.length(acc) < l do
+	  local e = 10000 --infinity
+		local step = vector.new(0,0,0)
+		for _,i in ipairs({1,10,11,100,101,110,111}) do
+			local candidate = vector.new(math.fmod(i, 10) * sign.x, math.fmod(math.floor(i/10),10) * sign.y, math.fmod(math.floor(i/100),10) * sign.z)
+			local c = vector.add(acc, candidate)
+			local p = vector.multiply(vector.normalize(v), vector.dot(c, vector.normalize(v)))
+			local d = vector.distance(c, p)
+			if d < e then
+				e = d
+				step = candidate
+			end
+		end
+		table.insert(result, step)
+		acc = vector.add(acc, step)
+	end
+	return result
+end
+
+minetest.after(5, function()
+	for _,v in ipairs({vector.new(3,4,5), vector.new(-3, -4, 5), vector.new(3,4,-5), vector.new(3,15,20)}) do
+		minetest.chat_send_all(dump(v,"").." "..dump(vector_to_sequence(v), ""))
+	end
+end)
+
 
 function shadows:update_shadows(min, max)
 	local vm = minetest.get_voxel_manip(vector.add(min, vector.new(-1,-1,-1)), vector.add(max, vector.new(1,1,1)))
@@ -104,10 +134,20 @@ function shadows:update_shadows(min, max)
 			for x = -1,max.x-min.x+1 do
 				i = origin + x + y*va.ystride + z*va.zstride
 				if y >= 0 and y <= max.y - min.y and x >= 0 and x <= max.x - min.x and z >= 0 and z <= max.z - min.z then
-					delta = ((min.y + y)%(-self.vector.y) == 0 and 1 or 0) -- 2 to 1
-					source = i + va.ystride - self.vector.x * delta - self.vector.z * delta*va.zstride
+					local seq_i = math.fmod((min.x+x)*self.filter.x + (min.y+y)*self.filter.y + (min.z+z)*self.filter.z, self.vector_n) + 1
+					if seq_i < 1 then seq_i = seq_i + self.vector_n end
+					if seq_i < 1 or seq_i > self.vector_n then
+						minetest.chat_send_all("out of range "..dump(vector.new(min.x+x, min.y+y, min.z+z),"").." "..dump(self.vector,"").." "..seq_i)
+						return
+					end
+					local delta = self.sequence[seq_i]
+					if delta == nil then
+						minetest.chat_send_all("nil delta "..dump(vector.new(min.x+x, min.y+y, min.z+z),"").." "..dump(self.vector,"").." "..#self.sequence.." "..seq_i)
+						return
+					end
+					source = i + delta.x + delta.y * va.ystride + delta.z * va.zstride
 					-- take the smallest transparency of self, +x and +z. this is to handle edges of walls, houses and caves
-					transparency = math.min(self.transparency[ data[i] ], math.min(self.transparency[ data[i - self.vector.x * delta] ], self.transparency[ data[i - self.vector.z * delta * va.zstride] ]))
+					transparency = math.min(self.transparency[ data[i] ], math.min(self.transparency[ data[i + delta.x ] ], self.transparency[ data[i + delta.z * va.zstride] ]))
 
 					if light[source] > minetest.LIGHT_MAX then
 						ilight = light[source] * transparency -- project ray
@@ -378,12 +418,19 @@ function shadows:update_vector()
 	if not self.map_params.follow_sun then
 		return
 	end
-	local time = math.floor(48 * minetest.get_timeofday()) / 48
-	local adj_time = math.min(19/24, 6/24 + math.max(0, time - 7/24) * 6/5)
-	local new_vector = vector.new(math.floor(0.5-math.sin(m2pi * adj_time)), -1 - math.abs(math.floor(2 * math.cos(m2pi * adj_time))), math.floor(math.cos(m2pi * adj_time)))
+	local time = math.floor(192*minetest.get_timeofday())/192
+	local adj_time = (math.min(17/24, 7/24 + math.max(0, time - 7/24)) - 6/24) * 2 -- translate from 6/24 to 18/24 into 0.0 to 1.0
+	local new_vector = vector.new(math.cos(m2pi * adj_time), math.sin(m2pi * adj_time), math.sin(m2pi * adj_time))
+	new_vector = vector.multiply(vector.normalize(new_vector), 16)
 	if not vector.equals(self.vector, new_vector) then
 		self.vector = new_vector
-		self.generation = math.floor(48 * (minetest.get_day_count() + time))
+		self.sequence = vector_to_sequence(new_vector)
+		self.vector_n = #self.sequence
+		self.filter = vector.new(math.abs(self.vector.x), math.abs(self.vector.y), math.abs(self.vector.z))
+		self.filter = vector.multiply(self.filter, 1/math.max(self.filter.x, self.filter.y, self.filter.z))
+		self.filter = vector.new(math.floor(self.filter.x),math.floor(self.filter.y),math.floor(self.filter.z))
+		minetest.chat_send_all("light: "..dump(self.vector,"").." "..dump(self.filter,""))
+		self.generation = math.floor(192 * (minetest.get_day_count() + time))
 	end
 end
 
